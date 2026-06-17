@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"
+  publish = "out/renderer"
+
+[build.environment]
+  # The Electron binary isn't needed to build the renderer for the web —
+  # skip downloading it to keep CI installs fast.
+  ELECTRON_SKIP_BINARY_DOWNLOAD = "1"
+  NODE_VERSION = "20"
