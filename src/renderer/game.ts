@@ -565,6 +565,21 @@ function placeTile(cx, cy, opts = {}) {
     return;
   }
 
+  // ── Clicking an existing LED Screen pixel manually toggles that pixel on/off ──
+  // A locked pixel stays lit (ignoring electron occupancy) until clicked again.
+  if (e && (e.type === 'ledscreen' || e.type === 'ledscreen_part') && tool !== 'delete') {
+    const main = e.type === 'ledscreen' ? e : getG(e.originX, e.originY);
+    if (!main) return;
+    const idx = e.type === 'ledscreen' ? 0 : e.pixelIdx;
+    if (!main.pixelLocked) main.pixelLocked = new Array(SCREEN_SIZE * SCREEN_SIZE).fill(false);
+    main.pixelLocked[idx] = !main.pixelLocked[idx];
+    if (main.pixelLocked[idx]) {
+      main.pixels[idx] = SCREEN_PIXEL_MAX;
+    }
+    main.flash = 6;
+    return;
+  }
+
   // ── Clicking an existing playpen LED (or any of its parts) with an LED tool re-colors it ──
   if (e && e.type === 'led' && e.placed && tool && tool.startsWith('led_') && tool !== 'delete') {
     e.color = tool.slice(4);
@@ -742,6 +757,7 @@ function placeTile(cx, cy, opts = {}) {
       type: 'ledscreen', originX: cx, originY: cy,
       pixels: new Array(SCREEN_SIZE * SCREEN_SIZE).fill(0),
       pixelColors: new Array(SCREEN_SIZE * SCREEN_SIZE).fill(null),
+      pixelLocked: new Array(SCREEN_SIZE * SCREEN_SIZE).fill(false),
       flash: 0
     });
     items = items.filter(it => !(it.cx === cx && it.cy === cy));
@@ -1409,6 +1425,8 @@ function update() {
             cell.pixels[idx] = SCREEN_PIXEL_MAX;
             const c = occupied.get(tk);
             if (c) cell.pixelColors[idx] = c;   // update remembered color while electron is live
+          } else if (cell.pixelLocked && cell.pixelLocked[idx]) {
+            cell.pixels[idx] = SCREEN_PIXEL_MAX;   // manually toggled on — stays lit regardless of electrons
           } else {
             cell.pixels[idx] = Math.max(0, (cell.pixels[idx] || 0) - SCREEN_DRAIN);
           }
