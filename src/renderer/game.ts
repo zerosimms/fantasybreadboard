@@ -897,15 +897,10 @@ function update() {
 
     // Miner directly adjacent to colorizer → enter it, gets tinted immediately
     if (nextCell.type === 'colorizer') {
-      // Miner must fire along the colorizer's axis, otherwise electron is blocked
-      const colHoriz  = nextCell.dir === DIR.R || nextCell.dir === DIR.L;
-      const minerHoriz = cell.dir === DIR.R || cell.dir === DIR.L;
-      if (colHoriz === minerHoriz) {
-        const blocked = items.some(it => it.cx === nx && it.cy === ny && it.progress < 0.15);
-        if (!blocked) {
-          items.push({ cx: nx, cy: ny, progress: 0, dir: cell.dir, color: nextCell.color });
-          nextCell.flash = 8;
-        }
+      const blocked = items.some(it => it.cx === nx && it.cy === ny && it.progress < 0.15);
+      if (!blocked) {
+        items.push({ cx: nx, cy: ny, progress: 0, dir: nextCell.dir, color: nextCell.color });
+        nextCell.flash = 8;
       }
       continue;
     }
@@ -1009,15 +1004,20 @@ function update() {
       cell.charge--; cell.flash = -6; continue;
     }
     if (outCell.type === 'belt' || outCell.type === 'switch' || outCell.type === 'colorizer' || outCell.type === 'delay' || outCell.type === 'ledscreen' || outCell.type === 'ledscreen_part' || outCell.type === 'button' || outCell.type === 'trigate' || outCell.type === 'trigate_part') {
-      // Keep new electron spaced beyond the collision threshold (sqrt(COLLIDE_D2) ≈ 0.224) so battery releases never overlap
-      const blocked = items.some(it => it.cx === outX && it.cy === outY && it.progress < 0.3);
+      // Spawn at the battery edge (progress -0.5 = tile boundary) so the electron rolls out smoothly.
+      // Blocked threshold shifted by the same -0.5 so effective discharge spacing is unchanged.
+      const blocked = items.some(it => it.cx === outX && it.cy === outY && it.progress < -0.2);
       if (blocked) continue;
       cell.charge--; cell.flash = -6;
       items.push({
-        cx: outX, cy: outY, progress: 0,
+        cx: outX, cy: outY, progress: -0.5,
+        // entryDir is the battery's own discharge direction — used only while progress < 0
+        // so the rollout animation always tracks back toward the battery regardless of
+        // which way the receiving belt faces.
+        entryDir: cell.dir ?? DIR.U,
         // Screen tiles have no dir of their own — use the battery's discharge direction so electrons
         // travel straight through the screen row/column they land on
-        dir: outCell.type === 'colorizer' ? (cell.dir ?? DIR.U)
+        dir: outCell.type === 'colorizer' ? outCell.dir
            : (outCell.type === 'ledscreen' || outCell.type === 'ledscreen_part') ? (cell.dir ?? DIR.U)
            : outCell.dir,
         // A colorizer overrides whatever color rides through it; otherwise the battery
@@ -1039,6 +1039,13 @@ function update() {
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
+
+    // ── LED entry animation: electron travels along the wire stub to the ring junction ──
+    if (it.enteringLed) {
+      it.progress += ITEM_SPD;
+      if (it.progress >= 1) remove.push(i);
+      continue;
+    }
 
     // ── Lifespan: once an electron has traveled too far, let it fade out and die in place ──
     if (it.fading) {
@@ -1111,11 +1118,15 @@ function update() {
         nextCell.flash = 8;
         if (challengeStartFrame < 0) challengeStartFrame = frame;
         totalElectrons++;
+        // Move into LED tile for wire-stub entry animation
+        it.cx = nx; it.cy = ny;
+        it.progress = 0;
+        it.enteringLed = true;
       } else {
         nextCell.flash = -6;
         popups.push({ wx: nx + 0.5, wy: ny - 0.4, life: 36, text: 'WRONG COLOR' });
+        remove.push(i);
       }
-      remove.push(i);
       continue;
     }
 
@@ -1162,15 +1173,12 @@ function update() {
 
     // Colorizer: tints the passing electron to its selected color
     if (nextCell && nextCell.type === 'colorizer') {
-      // Electrons must enter along the colorizer's axis — wrong axis = electron dies
-      const colHoriz = nextCell.dir === DIR.R || nextCell.dir === DIR.L;
-      const elHoriz  = it.dir === DIR.R || it.dir === DIR.L;
-      if (colHoriz !== elHoriz) { it.fading = true; it.fadeTick = ELECTRON_FADE_FRAMES; continue; }
       const blocked = items.some((it2, j) =>
         j !== i && it2.cx === nx && it2.cy === ny && it2.progress < 0.15
       );
       if (blocked) { it.progress = 0.99; continue; }
       it.cx = nx; it.cy = ny;
+      it.dir = nextCell.dir;   // redirect like a belt
       it.color = nextCell.color;
       nextCell.flash = 8;
       it.dist = (it.dist || 0) + 1;
@@ -1198,7 +1206,7 @@ function update() {
     // Button: passes electrons straight through when ON; blocks only electrons entering from the facing (closed) side
     if (nextCell && nextCell.type === 'button') {
       if (it.dir === (nextCell.dir + 2) % 4) { it.progress = 0.99; continue; } // block electrons entering from the facing side
-      if (!nextCell.on) { it.progress = 0.45; it.waitTick = 4; continue; } // gate is closed — hold in place
+      if (!nextCell.on) { nextCell.flash = -6; remove.push(i); continue; } // gate is closed — kill the electron
       const blocked = items.some((it2, j) =>
         j !== i && it2.cx === nx && it2.cy === ny && it2.progress < 0.15
       );
@@ -1221,8 +1229,8 @@ function update() {
       if (!main) continue;
       // Block electrons coming FROM the output side (traveling against the gate's flow)
       if (it.dir === (main.dir + 2) % 4) { it.progress = 0.99; continue; }
-      // Gate OFF — block all electrons before the tile
-      if (!main.on) { it.progress = 0.45; it.waitTick = 4; continue; }
+      // Gate OFF — kill electrons that reach it
+      if (!main.on) { main.flash = -6; remove.push(i); continue; }
       // Channel already occupied — hold the approaching electron back
       const occupied = items.some((it2, j) => j !== i && it2.cx === nx && it2.cy === ny);
       if (occupied) { it.progress = 0.99; continue; }
@@ -1343,7 +1351,13 @@ function update() {
     if (cell && cell.type === 'battery') return true;
     const [ndx, ndy] = DIR_VEC[it.dir];
     const next = getG(it.cx + ndx, it.cy + ndy);
-    return !!(next && next.type === 'battery');
+    if (next && next.type === 'battery') return true;
+    // Electrons with negative progress are still visually inside the battery tile — exempt them too
+    if (it.progress < 0) {
+      const behind = getG(it.cx - ndx, it.cy - ndy);
+      if (behind && behind.type === 'battery') return true;
+    }
+    return false;
   };
   // An electron currently parked inside a delay module (waiting out its hold), or about to
   // step into one, is exempt from collision — multiple electrons queued on/around the same
@@ -1365,7 +1379,7 @@ function update() {
     return !!(next && (next.type === 'ledscreen' || next.type === 'ledscreen_part'));
   };
   const worldPos = items.map(it => {
-    const [dx, dy] = DIR_VEC[it.dir];
+    const [dx, dy] = (it.progress < 0 && it.entryDir != null) ? DIR_VEC[it.entryDir] : DIR_VEC[it.dir];
     return [it.cx + 0.5 + dx * it.progress, it.cy + 0.5 + dy * it.progress];
   });
   const collide = new Set();
@@ -1380,7 +1394,6 @@ function update() {
       if (nearDelay(a)  || nearDelay(b))  continue; // let every electron be held & released by the delay module on schedule, not cancelled while queued
       if (nearScreen(a) || nearScreen(b)) continue; // every electron reaching a screen pixel is a valid charge — don't let convergence cancel them
       if (nearSwitch(a) || nearSwitch(b)) continue; // let every electron reach & toggle the switch
-      { const ca = getG(a.cx, a.cy), cb = getG(b.cx, b.cy); if ((ca && ca.type==='button') || (cb && cb.type==='button')) continue; } // electrons queued at a button shouldn't cancel each other
       { const ca = getG(a.cx, a.cy), cb = getG(b.cx, b.cy); if ((ca && (ca.type==='trigate'||ca.type==='trigate_part')) || (cb && (cb.type==='trigate'||cb.type==='trigate_part'))) continue; } // 3 channels gate — each channel valid
       const [ax, ay] = worldPos[i], [bx, by] = worldPos[j];
       const dx = ax - bx, dy = ay - by;
@@ -1629,9 +1642,7 @@ function render() {
 
   // ── Popups ──
   for (const p of popups) {
-    const alpha = p.life / 40;
-    const s = w2s(p.wx, p.wy);
-    // These are in screen space so we need to un-transform
+    const alpha = Math.min(1, p.life / 40);
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = PAL.popupColor;
@@ -2155,17 +2166,19 @@ function drawLED(x, y, cell) {
 
   // ── Bloom glow (lit only) ──
   if (lit) {
-    const glowR = R * 2.8 * (fl ? 1.3 : 1);
-    const grad = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, glowR);
-    grad.addColorStop(0,   `rgba(${rgb},${fl ? 0.60 : 0.45})`);
-    grad.addColorStop(0.4, `rgba(${rgb},${fl ? 0.22 : 0.16})`);
+    // Inner tight bloom
+    const glowR = R * 4.5 * (fl ? 1.4 : 1);
+    const grad = ctx.createRadialGradient(cx2, cy2, R * 0.5, cx2, cy2, glowR);
+    grad.addColorStop(0,   `rgba(${rgb},${fl ? 0.90 : 0.75})`);
+    grad.addColorStop(0.25, `rgba(${rgb},${fl ? 0.55 : 0.40})`);
+    grad.addColorStop(0.6, `rgba(${rgb},${fl ? 0.20 : 0.14})`);
     grad.addColorStop(1,   `rgba(${rgb},0)`);
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(cx2, cy2, glowR, 0, Math.PI*2); ctx.fill();
   }
 
   // ── LED component circle ──
-  if (lit) { ctx.shadowColor = fl ? '#fff' : hex; ctx.shadowBlur = fl ? 36 : 22; }
+  if (lit) { ctx.shadowColor = fl ? '#fff' : hex; ctx.shadowBlur = fl ? 55 : 38; }
   ctx.fillStyle = lit
     ? `rgba(${rgb},${0.12 + pct*0.18})`
     : `rgba(${rgb},${0.20 + pct*0.22})`;
@@ -2583,9 +2596,6 @@ function drawButton(x, y, cell) {
   ctx.fillStyle = 'rgba(255,255,255,0.25)';
   ctx.beginPath(); ctx.arc(cx2 - 1.5, cy2 - 1.5, r * 0.4, 0, Math.PI*2); ctx.fill();
 
-  // Yellow dot on the input side — shows where to connect the wire
-  drawPortArrow(cx2 - fdx * (T/2 - 6), cy2 - fdy * (T/2 - 6), 0, 0, PAL.portIn);
-
   // Labels
   ctx.fillStyle = on ? 'rgba(100,255,160,0.85)' : 'rgba(180,180,200,0.5)';
   ctx.font = '7px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
@@ -2713,13 +2723,32 @@ function drawBattery(x, y, cell) {
   ctx.fillRect(px+3, py+3, T-6, T-6);
   ctx.globalAlpha = dimAlpha;
 
-  // Charge bar (fills from bottom up)
-  if (pct > 0) {
-    const barH = (T-14) * pct;
-    ctx.fillStyle = PAL.battCharge;
-    ctx.globalAlpha = 0.4;
-    ctx.fillRect(px+4, py+7+T-14-barH, T-8, barH);
-    ctx.globalAlpha = 1;
+  // Charge bar (fills from bottom up) — draw track then fill
+  {
+    const barX = px + 5, barW = T - 10, barMaxH = T - 16, barY = py + 8;
+    // Track background
+    ctx.fillStyle = 'rgba(20,20,35,0.6)';
+    ctx.fillRect(barX, barY, barW, barMaxH);
+    ctx.strokeStyle = 'rgba(60,130,90,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barMaxH);
+    if (pct > 0) {
+      const barH = barMaxH * pct;
+      const barFill = fl
+        ? (isCharging ? 'rgba(60,230,130,0.95)' : 'rgba(80,200,255,0.9)')
+        : 'rgba(40,210,110,0.82)';
+      if (fl) { ctx.shadowColor = isCharging ? '#40e890' : PAL.battDischarge; ctx.shadowBlur = 8; }
+      ctx.fillStyle = barFill;
+      ctx.fillRect(barX, barY + barMaxH - barH, barW, barH);
+      ctx.shadowBlur = 0;
+      // Bright top edge on the filled portion
+      ctx.strokeStyle = fl ? (isCharging ? 'rgba(120,255,180,0.9)' : 'rgba(160,230,255,0.9)') : 'rgba(80,230,150,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(barX, barY + barMaxH - barH);
+      ctx.lineTo(barX + barW, barY + barMaxH - barH);
+      ctx.stroke();
+    }
   }
 
   if (fl) { ctx.shadowColor = brdCol; ctx.shadowBlur = 12; }
@@ -2734,23 +2763,44 @@ function drawBattery(x, y, cell) {
   ctx.save();
   ctx.translate(cx2, cy2); ctx.rotate(battAngle); ctx.translate(-cx2, -cy2);
 
-  // Top lead (+) from top edge to component — this is the OUTPUT side (cell.dir)
+  // ── OUTPUT side (top in unrotated = cell.dir) ──
+  const outCol = isOn ? (isDischarging ? PAL.battDischarge : PAL.battAccent) : 'rgba(80,80,80,0.35)';
+
+  // Lead wire from output edge to plates
   ctx.strokeStyle = brdCol; ctx.lineWidth = 2; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(cx2, py); ctx.lineTo(cx2, cy2-10); ctx.stroke();
-  // "+" label near top lead
-  ctx.fillStyle = accCol; ctx.font = 'bold 8px monospace';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-  ctx.fillText('+', cx2 - 5, py + 10);
-  // Exit chevron — cyan, points OUT through the top edge: discharged electrons leave here
-  // (hidden once something is actually wired up on that side)
+  ctx.beginPath(); ctx.moveTo(cx2, py + 2); ctx.lineTo(cx2, cy2 - 10); ctx.stroke();
+
+  // "OUT" label + outward triangle arrow
+  ctx.fillStyle = outCol; ctx.font = 'bold 7px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('OUT', px + 4, py + 4);
+  ctx.beginPath();
+  ctx.moveTo(cx2,     py + 3);
+  ctx.lineTo(cx2 - 3, py + 9);
+  ctx.lineTo(cx2 + 3, py + 9);
+  ctx.closePath(); ctx.fill();
+
   if (cell.preview && !battOutConnected) drawPortArrow(cx2, py + 1.5, 0, -1, PAL.portOut);
 
-  // Bottom lead (−) from bottom edge to component — this is the INPUT side (opposite cell.dir)
+  // ── INPUT side (bottom in unrotated = opposite cell.dir) ──
+  const inCol = isOn ? PAL.portIn : 'rgba(80,80,80,0.35)';
+  ctx.strokeStyle = inCol; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(px + 5, py + T - 2); ctx.lineTo(px + T - 5, py + T - 2); ctx.stroke();
+
+  // Lead wire from input edge to plates
   ctx.strokeStyle = brdCol; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(cx2, py+T); ctx.lineTo(cx2, cy2+10); ctx.stroke();
-  ctx.fillText('−', cx2 - 5, py+T-3);
-  // Entry chevron — amber, points INTO the tile through the bottom edge: feed electrons in here
-  // (hidden once something is actually wired up on that side)
+  ctx.beginPath(); ctx.moveTo(cx2, py + T - 2); ctx.lineTo(cx2, cy2 + 10); ctx.stroke();
+
+  // "IN" label + inward triangle arrow (pointing up into battery)
+  ctx.fillStyle = inCol; ctx.font = 'bold 7px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText('IN', px + 4, py + T - 4);
+  ctx.beginPath();
+  ctx.moveTo(cx2,     py + T - 3);
+  ctx.lineTo(cx2 - 3, py + T - 9);
+  ctx.lineTo(cx2 + 3, py + T - 9);
+  ctx.closePath(); ctx.fill();
+
   if (cell.preview && !battInConnected) drawPortArrow(cx2, py + T - 1.5, 0, -1, PAL.portIn);
 
   ctx.shadowBlur = 0;
@@ -2819,10 +2869,32 @@ function drawItem(it) {
   const itCell = getG(it.cx, it.cy);
   if (itCell && (itCell.type === 'ledscreen' || itCell.type === 'ledscreen_part')) return;
 
-  let wx, wy;
-  const [dx, dy] = DIR_VEC[it.dir];
-  wx = (it.cx + 0.5 + dx * it.progress) * TILE;
-  wy = (it.cy + 0.5 + dy * it.progress) * TILE;
+  // While progress is negative the electron is visually inside the battery tile —
+  // use entryDir (the battery's discharge direction) so it tracks back toward the
+  // battery regardless of which way the receiving belt faces.
+  const [dx, dy] = (it.progress < 0 && it.entryDir != null) ? DIR_VEC[it.entryDir] : DIR_VEC[it.dir];
+  let wx: number, wy: number;
+  if (it.enteringLed) {
+    // Interpolate along the wire stub: from the tile's input edge to the ring junction
+    const T2 = TILE;
+    const size2 = itCell.size || 1;
+    const S2 = 1 + (size2 - 1) * 0.55;
+    const R2 = 10 * S2;
+    const ox2 = itCell.originX ?? it.cx, oy2 = itCell.originY ?? it.cy;
+    const cx3 = (ox2 + size2 / 2) * T2, cy3 = (oy2 + size2 / 2) * T2;
+    const ledDir2 = itCell.placed ? (itCell.dir ?? DIR.R) : null;
+    const [inDx2, inDy2] = ledDir2 != null ? DIR_VEC[(ledDir2 + 2) % 4] : [0, 1];
+    // Start from the anchor tile center — that's where the electron physically is at progress=0
+    const entryX = (it.cx + 0.5) * T2;
+    const entryY = (it.cy + 0.5) * T2;
+    const ringX2 = cx3 + inDx2 * (R2 + 5 * S2);
+    const ringY2 = cy3 + inDy2 * (R2 + 5 * S2);
+    wx = entryX + (ringX2 - entryX) * it.progress;
+    wy = entryY + (ringY2 - entryY) * it.progress;
+  } else {
+    wx = (it.cx + 0.5 + dx * it.progress) * TILE;
+    wy = (it.cy + 0.5 + dy * it.progress) * TILE;
+  }
 
   // Tinted electrons (passed through a colorizer) glow in their assigned color
   const glow = it.color ? (COLOR_GLOW[it.color] || PAL.itemGlow) : PAL.itemGlow;
@@ -3259,10 +3331,10 @@ function showTutCallout(id: string, tx: number, ty: number, title: string, body:
   if (tutCalloutShown[id]) return;
   tutCalloutShown[id] = true;
 
-  // Convert world tile → screen pixels
+  // Convert world tile → screen pixels (matches w2s formula)
   function tileToScreen() {
-    const cx2 = (tx + 0.5) * TILE * cam.zoom - cam.x;
-    const cy2 = (ty + 0.5) * TILE * cam.zoom - cam.y;
+    const cx2 = ((tx + 0.5) * TILE + cam.x) * cam.zoom + W / 2;
+    const cy2 = ((ty + 0.5) * TILE + cam.y) * cam.zoom + H / 2;
     return { sx: cx2, sy: cy2 };
   }
 
@@ -3320,11 +3392,12 @@ function updateChallengeHUD() {
         .filter(c => c.type === 'battery').map(c => c.charge ?? 0));
       const pct  = Math.min(1, maxCharge / BATTERY_MAX);
       const reqs = jobRequirementsMet();
-      if (chalCount) chalCount.textContent = reqs ? `${maxCharge}% CHARGED` : 'BUILD CIRCUIT';
+      const pctDisplay = Math.round(pct * 100);
+      if (chalCount) chalCount.textContent = reqs ? `${pctDisplay}% CHARGED` : 'BUILD CIRCUIT';
       if (chalFill)  chalFill.style.width  = `${pct * 100}%`;
       if (chalTime)  chalTime.textContent  = maxCharge >= BATTERY_MAX
         ? 'FULLY CHARGED ✓'
-        : reqs ? `${BATTERY_MAX - maxCharge}% TO GO` : 'PLACE COMPONENTS';
+        : reqs ? `${100 - pctDisplay}% TO GO` : 'PLACE COMPONENTS';
       if (chalFill)  chalFill.style.background = maxCharge >= BATTERY_MAX
         ? 'linear-gradient(90deg,#10a050,#78e8a0)'
         : reqs
@@ -3741,11 +3814,14 @@ function snapshotState() {
     version: 1,
     savedAt: Date.now(),
     money,
+    frame,
     grid: [...grid.entries()],
     allLitTimer,
     challengeWon,
     challengeStartFrame,
     totalElectrons,
+    bankIncome,
+    challengeStartMoney,
     currentJobId: currentJob ? currentJob.id : null,
     jobTimeLeft,
     completedJobs: [...completedJobs.entries()],  // [[id, grade], ...]
@@ -3764,10 +3840,13 @@ function applySnapshot(data) {
   placeLEDs();
   money               = data.money ?? STARTING_CREDIT;
   displayedMoney      = money;
+  frame               = data.frame ?? 0;
   allLitTimer         = data.allLitTimer ?? 0;
   challengeWon        = !!data.challengeWon;
   challengeStartFrame = data.challengeStartFrame ?? -1;
   totalElectrons      = data.totalElectrons ?? 0;
+  bankIncome          = data.bankIncome ?? 0;
+  challengeStartMoney = data.challengeStartMoney ?? 0;
   currentJob          = ALL_JOBS.find(j => j.id === data.currentJobId) || null;
   jobTimeLeft         = data.jobTimeLeft ?? -1;
   completedJobs.clear();
