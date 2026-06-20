@@ -47,9 +47,9 @@ const NODE_COST = {
 const DELAY_PRESETS = [0.2, 0.4, 0.6, 0.8, 1.0];   // selectable hold durations (seconds), cycled by clicking a placed delay module
 const COLORIZER_COMMIT_FRAMES = 180;   // frames of idle after last click before color locks (~3s)
 const STARTING_CREDIT = 200;
-const canAfford = t => isPlaypen || money >= (NODE_COST[t] ?? 0);
+const canAfford = t => isPlaypen || (levelKit != null ? (levelKit[t] ?? 0) > 0 : money >= (NODE_COST[t] ?? 0));
 const ITEM_SPD  = 0.022;     // item progress per frame (0→1 per cell)
-const ELECTRON_LIFESPAN = 10;   // tiles an electron can travel before it fades out and dies
+const ELECTRON_LIFESPAN = 20;   // tiles an electron can travel before it fades out and dies
 const ELECTRON_FADE_FRAMES = 16;   // frames spent fading out once lifespan is reached
 
 const DIR = { R:0, D:1, L:2, U:3 };
@@ -237,6 +237,8 @@ let totalElectrons     = 0;    // electrons delivered to LEDs
 let activeLedCount     = 5;    // how many LEDs are placed for the current job (0 = none)
 let challengeStartMoney = 0;   // money snapshot at challenge start (kept for win-screen stats)
 let bankIncome         = 0;    // credits earned by receivers during this challenge (never decrements)
+let levelKit           = null; // { belt:12, colorizer:2, ... } in puzzle mode; null otherwise
+let puzzleOres         = new Set<string>(); // ore tiles placed by loadPuzzle, cleaned up on exit
 
 // Tutorial callout state
 let tutCalloutShown: Record<string, boolean> = {};  // tracks which one-shot callouts have fired
@@ -353,8 +355,8 @@ function placeLEDs() {
   // Playpen always gets 0 LEDs; jobs use their leds field (default 5); no-job defaults to 5
   const count = isPlaypen ? 0 : (currentJob ? (currentJob.leds ?? 5) : 5);
   activeLedCount = count;
-  // Show challenge HUD when there are LEDs to track, or an earn target to show progress toward
-  const hasChallenge = count > 0 || !!(currentJob && (currentJob.earn || currentJob.fillBattery));
+  // Show challenge HUD when there are LEDs to track, or an earn target, or a puzzle
+  const hasChallenge = count > 0 || !!(currentJob && (currentJob.earn || currentJob.fillBattery || currentJob.isPuzzle));
   const chalSection = document.getElementById('toolbar-challenge');
   if (chalSection) chalSection.style.display = hasChallenge ? 'flex' : 'none';
   // Update dot visibility
@@ -399,6 +401,7 @@ function placeLEDs() {
 function removeBuilding(cx, cy) {
   const e = getG(cx, cy);
   if (!e) return;
+  if (e.locked) return;   // puzzle-locked components can't be removed
   if ((e.type === 'led' && !e.placed) || (e.type === 'led_part' && !e.placed)) return;   // fixed challenge LEDs (and their reserved footprint) are permanent
   // Placed 4×4 LED: remove all 16 tiles (works for both anchor and part clicks)
   if ((e.type === 'led' || e.type === 'led_part') && e.placed) {
@@ -421,6 +424,7 @@ function removeBuilding(cx, cy) {
         items = items.filter(it => !(it.cx === tx && it.cy === ty));
       }
     }
+    if (levelKit && 'ledscreen' in levelKit) { levelKit.ledscreen++; updateKitDisplay(); }
     return;
   }
   // Trigate: remove all 3 tiles in its footprint
@@ -434,10 +438,13 @@ function removeBuilding(cx, cy) {
       delG(tx, ty);
       items = items.filter(it => !(it.cx === tx && it.cy === ty));
     }
+    if (levelKit && 'trigate' in levelKit) { levelKit.trigate++; updateKitDisplay(); }
     return;
   }
+  const removedType = e.type === 'trigate_part' ? 'trigate' : e.type;
   delG(cx, cy);
   items = items.filter(it => !(it.cx === cx && it.cy === cy));
+  if (levelKit && removedType in levelKit) { levelKit[removedType]++; updateKitDisplay(); }
 }
 
 function canPlace(cx, cy) {
@@ -451,10 +458,11 @@ function canPlace(cx, cy) {
   const replaceable = !e || e.type === 'belt' || (e.type === 'led' && e.placed);
   if (tool.startsWith('led_')) {
     if (!isPlaypen) return false;
+    const lox = cx - 2, loy = cy - 2;
     for (let dy = 0; dy < 4; dy++) {
       for (let dx = 0; dx < 4; dx++) {
-        if (!inBnd(cx + dx, cy + dy)) return false;
-        const t = getG(cx + dx, cy + dy);
+        if (!inBnd(lox + dx, loy + dy)) return false;
+        const t = getG(lox + dx, loy + dy);
         if (!t || t.type === 'belt') continue;
         if ((t.type === 'led' || t.type === 'led_part') && t.placed) continue;
         return false;
@@ -540,8 +548,8 @@ function placeTile(cx, cy, opts = {}) {
     return;
   }
 
-  // ── Clicking an existing button toggles it open/closed ──
-  if (e && e.type === 'button' && tool !== 'delete') {
+  // ── Clicking an existing button toggles it open/closed (not on drag) ──
+  if (e && e.type === 'button' && tool !== 'delete' && !opts.dragging) {
     e.on = !e.on;
     e.flash = 10;
     return;
@@ -661,7 +669,8 @@ function placeTile(cx, cy, opts = {}) {
       return;   // rotating an existing wire is free
     }
     if (!canAfford('belt')) return;
-    if (!isPlaypen) money -= NODE_COST.belt;
+    if (levelKit != null) { levelKit.belt = (levelKit.belt ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.belt;
     setG(cx, cy, { type: 'belt', dir: smartDir(cx, cy) });
     return;
   }
@@ -669,7 +678,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'receiver') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('receiver')) return;
-    if (!isPlaypen) money -= NODE_COST.receiver;
+    if (levelKit != null) { levelKit.receiver = (levelKit.receiver ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.receiver;
     replaceBuilding(cx, cy, { type: 'receiver', dir: beltDir, flash: 0 });
     return;
   }
@@ -677,7 +687,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'battery') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('battery')) return;
-    if (!isPlaypen) money -= NODE_COST.battery;
+    if (levelKit != null) { levelKit.battery = (levelKit.battery ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.battery;
     replaceBuilding(cx, cy, { type: 'battery', dir: beltDir, charge: 0, dischargeTick: 0, flash: 0, on: true });
     return;
   }
@@ -685,7 +696,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'switch') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('switch')) return;
-    if (!isPlaypen) money -= NODE_COST.switch;
+    if (levelKit != null) { levelKit.switch = (levelKit.switch ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.switch;
     replaceBuilding(cx, cy, { type:'switch', dir:beltDir, state:0 });
     return;
   }
@@ -693,7 +705,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'colorizer') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('colorizer')) return;
-    if (!isPlaypen) money -= NODE_COST.colorizer;
+    if (levelKit != null) { levelKit.colorizer = (levelKit.colorizer ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.colorizer;
     replaceBuilding(cx, cy, { type: 'colorizer', dir: beltDir, color: COLOR_NAMES[0], flash: 0 });
     return;
   }
@@ -701,7 +714,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'delay') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('delay')) return;
-    if (!isPlaypen) money -= NODE_COST.delay;
+    if (levelKit != null) { levelKit.delay = (levelKit.delay ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.delay;
     replaceBuilding(cx, cy, { type: 'delay', dir: beltDir, delaySec: DELAY_PRESETS[0], flash: 0 });
     return;
   }
@@ -709,7 +723,8 @@ function placeTile(cx, cy, opts = {}) {
   if (tool === 'button') {
     if (e && e.type !== 'belt') return;
     if (!canAfford('button')) return;
-    if (!isPlaypen) money -= NODE_COST.button;
+    if (levelKit != null) { levelKit.button = (levelKit.button ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.button;
     replaceBuilding(cx, cy, { type: 'button', dir: beltDir, on: true, flash: 0 });
     return;
   }
@@ -725,7 +740,8 @@ function placeTile(cx, cy, opts = {}) {
       if (t && t.type !== 'belt') return;
     }
     if (!canAfford('trigate')) return;
-    if (!isPlaypen) money -= NODE_COST.trigate;
+    if (levelKit != null) { levelKit.trigate = (levelKit.trigate ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.trigate;
     // Place anchor at tile 0
     setG(ox, oy, { type: 'trigate', dir: beltDir, on: false, flash: 0, originX: ox, originY: oy });
     items = items.filter(it => !(it.cx === ox && it.cy === oy));
@@ -748,7 +764,8 @@ function placeTile(cx, cy, opts = {}) {
       }
     }
     if (!canAfford('ledscreen')) return;
-    if (!isPlaypen) money -= NODE_COST.ledscreen;
+    if (levelKit != null) { levelKit.ledscreen = (levelKit.ledscreen ?? 0) - 1; updateKitDisplay(); }
+    else if (!isPlaypen) money -= NODE_COST.ledscreen;
     // Place origin tile (top-left) with the pixel state arrays
     setG(cx, cy, {
       type: 'ledscreen', originX: cx, originY: cy,
@@ -773,7 +790,7 @@ function placeTile(cx, cy, opts = {}) {
   // ── Playpen LEDs — 4×4 rotatable lights with a single directional input ──
   if (tool && tool.startsWith('led_')) {
     if (!isPlaypen) return;
-    const ox = cx, oy = cy;
+    const ox = cx - 2, oy = cy - 2;   // centre the 4×4 block on the cursor
     for (let dy = 0; dy < 4; dy++) {
       for (let dx = 0; dx < 4; dx++) {
         if (!inBnd(ox + dx, oy + dy)) return;
@@ -865,7 +882,7 @@ function update() {
     if (nextCell.type === 'battery') {
       if (cell.dir === nextCell.dir) {
         nextCell.charge = Math.min(BATTERY_MAX, nextCell.charge + 1);
-        nextCell.color  = undefined;   // raw ore feeds the battery colorless — it now remembers that
+        if (!nextCell.locked) nextCell.color = undefined;  // raw ore clears color; locked (puzzle) batteries keep theirs
         nextCell.flash  = 8;
       }
       continue;
@@ -1448,7 +1465,13 @@ function update() {
   if (!challengeWon && !isPlaypen) {
     let winCondMet = false;
     let holdTarget = WIN_HOLD_FRAMES;
-    if (activeLedCount === 0) {
+    if (currentJob && currentJob.isPuzzle) {
+      // Puzzle mode: all locked LEDs on the grid must reach charge threshold
+      const puzzleLeds = [...grid.values()].filter(c => c.type === 'led' && c.locked);
+      winCondMet = puzzleLeds.length > 0 && puzzleLeds.every(c => c.charge >= LED_LIT_THRESH);
+      holdTarget = currentJob.winHold ?? 180;
+      if (winCondMet && challengeStartFrame < 0) challengeStartFrame = frame;
+    } else if (activeLedCount === 0) {
       if (currentJob && currentJob.fillBattery) {
         // Battery-fill job: win when any placed battery reaches BATTERY_MAX charge
         const maxCharge = Math.max(0, ...Array.from(grid.values())
@@ -2984,10 +3007,11 @@ function drawHover(cx, cy) {
   } else if (tool === 'vein') {
     drawOre(cx, cy);
   } else if (tool.startsWith('led_')) {
+    const lox = cx - 2, loy = cy - 2;   // centre block on cursor
     const [aox, aoy] = beltDir === DIR.R ? [0, 1] :
                         beltDir === DIR.D ? [1, 0] :
                         beltDir === DIR.L ? [3, 1] : [1, 3];
-    drawLED(cx + aox, cy + aoy, { charge: 0, flash: 0, color: tool.slice(4), size: 4, dir: beltDir, originX: cx, originY: cy, placed: true });
+    drawLED(lox + aox, loy + aoy, { charge: 0, flash: 0, color: tool.slice(4), size: 4, dir: beltDir, originX: lox, originY: loy, placed: true });
   }
   ctx.globalAlpha = 1;
 
@@ -3001,9 +3025,13 @@ function drawHover(cx, cy) {
 // INPUT
 // ═══════════════════════════════════════════════════════════════
 
-// Returns the Set of tool names allowed in the current tutorial job,
-// or null when all tools are available (no tutorial active).
+// Returns the Set of tool names allowed in the current job/puzzle,
+// or null when all tools are available.
 function getEnabledTools() {
+  if (currentJob && currentJob.isPuzzle && levelKit != null) {
+    const allowed = new Set(['delete', ...Object.keys(levelKit)]);
+    return allowed;
+  }
   if (!currentJob || !currentJob.id.startsWith('tut-')) return null;
   const enabled = new Set(['miner', 'belt', 'receiver', 'delete']);
   for (const t of (currentJob.requires || [])) enabled.add(t);
@@ -3383,6 +3411,23 @@ function showTutCallout(id: string, tx: number, ty: number, title: string, body:
 // ═══════════════════════════════════════════════════════════════
 
 function updateChallengeHUD() {
+  // ── Puzzle mode: show locked-LED progress ──
+  if (currentJob && currentJob.isPuzzle) {
+    const puzzleLeds = [...grid.values()].filter(c => c.type === 'led' && c.locked);
+    const total   = puzzleLeds.length;
+    const litCount = puzzleLeds.filter(c => c.charge >= LED_LIT_THRESH).length;
+    if (chalCount) chalCount.textContent = total > 0 ? `${litCount}/${total} LIT` : 'BUILD CIRCUIT';
+    const holdPct = Math.min(1, allLitTimer / (currentJob.winHold ?? 180));
+    if (chalFill) chalFill.style.width = `${holdPct * 100}%`;
+    if (chalTime) chalTime.textContent = `HOLD ${(allLitTimer / 60).toFixed(1)}s`;
+    const allLit = total > 0 && litCount === total;
+    if (chalFill) chalFill.style.background = allLit
+      ? 'linear-gradient(90deg,#2060ff,#78e8ff)'
+      : 'linear-gradient(90deg,#601020,#ff4060)';
+    updateGoalPanel();
+    return;
+  }
+
   const noLed = activeLedCount === 0;
 
   if (noLed) {
@@ -3552,6 +3597,31 @@ function stopConfetti() {
 }
 
 function triggerWin() {
+  const clockEl = document.getElementById('puzzle-clock');
+  if (clockEl) clockEl.style.display = 'none';
+
+  // ── Puzzle win: simpler screen, no rank ──
+  if (currentJob && currentJob.isPuzzle) {
+    lastJobRank = { grade: 'S', color: '#40e890', label: 'SOLVED' };
+    const titleEl = document.getElementById('win-title');
+    const subEl   = document.getElementById('win-sub');
+    const rankBadge = document.getElementById('win-rank-badge');
+    const rankLabel = document.getElementById('win-rank-label');
+    if (titleEl) titleEl.textContent = 'PUZZLE SOLVED';
+    if (subEl)   subEl.textContent   = currentJob.title.toUpperCase();
+    if (rankBadge) { rankBadge.textContent = '✓'; rankBadge.style.color = '#40e890'; rankBadge.style.textShadow = '0 0 28px #40e89088'; rankBadge.style.display = 'block'; }
+    if (rankLabel) { rankLabel.textContent = 'COMPLETE'; rankLabel.style.color = '#40e890'; rankLabel.style.display = 'block'; }
+    const statsEl = document.getElementById('win-stats');
+    statsEl.innerHTML = `<div style="font-size:10px;letter-spacing:1.5px;color:rgba(160,255,200,0.7);margin-bottom:8px">PUZZLE MODE</div>` +
+      `WIRES LEFT &nbsp; <span>${Object.values(levelKit || {}).reduce((a, b) => a + b, 0)}</span><br>` +
+      `ELECTRONS &nbsp;&nbsp; <span>${totalElectrons.toLocaleString()}</span>`;
+    const btn = document.getElementById('win-btn');
+    if (btn) { btn.textContent = 'BACK TO PUZZLES'; btn.onclick = finishJob; }
+    document.getElementById('win').style.display = 'flex';
+    startConfetti();
+    return;
+  }
+
   const elapsed = challengeStartFrame >= 0
     ? ((winFrame - challengeStartFrame) / 60).toFixed(1)
     : '?';
@@ -3622,10 +3692,12 @@ function finishJob() {
     const prev = completedJobs.get(currentJob.id);
     const prevIdx = prev ? GRADE_ORDER.indexOf(prev) : 999;
     const newIdx  = GRADE_ORDER.indexOf(lastJobRank.grade);
-    // Store whichever is better (lower index = better)
     if (newIdx < prevIdx) completedJobs.set(currentJob.id, lastJobRank.grade);
     else if (!prev)       completedJobs.set(currentJob.id, lastJobRank.grade);
   }
+  levelKit = null;
+  for (const k of puzzleOres) ores.delete(k);
+  puzzleOres.clear();
   currentJob = null;
   jobTimeLeft = -1;
   document.getElementById('win').style.display = 'none';
@@ -3654,6 +3726,7 @@ function resetChallenge(opts = {}) {
   document.getElementById('moneyVal').textContent = '$' + money.toLocaleString();
   document.getElementById('moneyRate').textContent = '$0/s';
   placeLEDs();
+  updateKitDisplay();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3764,7 +3837,84 @@ const JOBS = [
   },
 ];
 
-const ALL_JOBS = [...TUTORIAL_JOBS, ...JOBS];
+// ── Puzzle Levels — self-contained routing puzzles with a fixed component kit ──
+const PUZZLE_LEVELS = [
+  {
+    id: 'puz-01', isPuzzle: true,
+    title: 'Hello Circuit',
+    client: 'Puzzle — Stage 01',
+    brief: '"One battery. One light. Thirteen wires. How hard could it be?"',
+    objective: 'Connect the battery to the LED. Kit: 13 wires.',
+    kit: { belt: 13 },
+    fixedBatteries: [{ x: 31, y: 32, dir: DIR.R }],
+    fixedLeds: [{ ox: 37, oy: 30, dir: DIR.R, color: null }],
+    fixedExtra: [
+      { x: 30, y: 32, cell: { type: 'miner', dir: DIR.R, tick: 0, tier: 0 } },
+    ],
+    fixedOres: [{ x: 30, y: 32 }],
+    winHold: 180,
+    leds: 0, reward: 0, timeLimit: null, requires: [],
+  },
+  {
+    id: 'puz-02', isPuzzle: true,
+    title: 'Power Surge',
+    client: 'Puzzle — Stage 02',
+    brief: '"The extractor is slowly charging the battery. Don\'t rush — wait for enough charge, then flip it ON."',
+    objective: 'Wire the battery to the LED. Let it charge, then click the battery ON before time runs out. Kit: 8 wires. 40 seconds.',
+    kit: { belt: 8 },
+    fixedBatteries: [{ x: 31, y: 32, dir: DIR.R, charge: 3, on: false }],
+    fixedLeds: [{ ox: 37, oy: 30, dir: DIR.R, color: null }],
+    fixedExtra: [
+      { x: 30, y: 32, cell: { type: 'miner', dir: DIR.R, tick: 0, tier: 0 } },
+    ],
+    fixedOres: [{ x: 30, y: 32 }],
+    winHold: 120,
+    timeLimit: 40,
+    leds: 0, reward: 0, requires: [],
+  },
+  {
+    id: 'puz-03', isPuzzle: true,
+    title: 'Color Rush',
+    client: 'Puzzle — Stage 03',
+    brief: '"Red goes to red. Blue goes to blue. The LEDs will tell you if you\'re wrong."',
+    objective: 'Route each colored battery to its matching LED. Kit: 28 wires.',
+    kit: { belt: 28 },
+    fixedBatteries: [
+      { x: 31, y: 28, dir: DIR.R, color: 'red' },
+      { x: 31, y: 35, dir: DIR.R, color: 'blue' },
+    ],
+    fixedLeds: [
+      { ox: 38, oy: 26, dir: DIR.R, color: 'red' },
+      { ox: 38, oy: 33, dir: DIR.R, color: 'blue' },
+    ],
+    fixedExtra: [
+      { x: 30, y: 28, cell: { type: 'miner', dir: DIR.R, tick: 0, tier: 0 } },
+      { x: 30, y: 35, cell: { type: 'miner', dir: DIR.R, tick: 0, tier: 0 } },
+    ],
+    fixedOres: [{ x: 30, y: 28 }, { x: 30, y: 35 }],
+    winHold: 300,
+    leds: 0, reward: 0, timeLimit: null, requires: [],
+  },
+  {
+    id: 'puz-04', isPuzzle: true,
+    title: 'Open Sesame',
+    client: 'Puzzle — Stage 04',
+    brief: '"The gate is closed. Wire it up first — then open it."',
+    objective: 'Wire battery → button → LED, then click the button to open the gate. Kit: 14 wires.',
+    kit: { belt: 14 },
+    fixedBatteries: [{ x: 31, y: 32, dir: DIR.R }],
+    fixedLeds: [{ ox: 38, oy: 30, dir: DIR.R, color: null }],
+    fixedExtra: [
+      { x: 30, y: 32, cell: { type: 'miner', dir: DIR.R, tick: 0, tier: 0 } },
+      { x: 34, y: 32, cell: { type: 'button', dir: DIR.R, on: false, flash: 0 } },
+    ],
+    fixedOres: [{ x: 30, y: 32 }],
+    winHold: 300,
+    leds: 0, reward: 0, timeLimit: null, requires: [],
+  },
+];
+
+const ALL_JOBS = [...TUTORIAL_JOBS, ...JOBS, ...PUZZLE_LEVELS];
 
 function jobRequirementsMet() {
   if (!currentJob || !currentJob.requires || !currentJob.requires.length) return true;
@@ -4056,29 +4206,75 @@ function makeJobCard(job, jobnum) {
   return card;
 }
 
+function makePuzzleCard(def, num) {
+  const done = completedJobs.has(def.id);
+  const card = document.createElement('div');
+  card.className = 'job-card puzzle-card' + (done ? ' job-done' : '');
+
+  const kitBadges = Object.entries(def.kit).map(([t, n]) =>
+    `<span class="job-row-req-badge" style="background:rgba(30,80,160,0.12);border-color:rgba(44,81,131,0.3);color:#1a4a90">${(COMPONENT_LABEL[t] || t).toUpperCase()} ×${n}</span>`
+  ).join('');
+
+  const doneBadge = done
+    ? `<div class="job-rank-badge" style="color:#40e890;text-shadow:0 0 12px #40e89066">✓</div><div class="job-rank-label" style="color:#40e890">SOLVED</div>`
+    : '';
+
+  card.innerHTML = `
+    <div class="job-row-num">${String(num).padStart(2,'0')}${doneBadge}</div>
+    <div class="job-row-body">
+      <div class="job-row-client">${def.client}</div>
+      <div class="job-row-title">${def.title}</div>
+      <div class="job-row-objective">${def.objective}</div>
+      <div class="job-row-requires">${kitBadges}</div>
+      <div class="job-row-brief">${def.brief}</div>
+    </div>
+    <div class="job-row-side">
+      <div>
+        <div class="job-row-payout" style="font-size:13px;color:var(--ink-faint);letter-spacing:1px">PUZZLE<br>MODE</div>
+      </div>
+      <button class="job-accept" style="background:linear-gradient(135deg,#163a66,#1a5090)">${done ? 'REPLAY ↩' : 'START →'}</button>
+    </div>
+  `;
+  card.querySelector('.job-accept').addEventListener('click', () => loadPuzzle(def));
+  return card;
+}
+
 function buildJobCards() {
   const wrap = document.getElementById('job-cards');
   wrap.innerHTML = '';
 
-  // ── Training section ──
-  const tutHeader = document.createElement('div');
-  tutHeader.className = 'job-section-header';
-  tutHeader.innerHTML = `
-    <span>TRAINING</span>
-    <span class="job-section-progress">${TUTORIAL_JOBS.filter(j => completedJobs.has(j.id)).length} / ${TUTORIAL_JOBS.length} completed</span>
+  // ── Playpen card ──
+  const playpenCard = document.createElement('div');
+  playpenCard.className = 'job-card playpen-card';
+  playpenCard.innerHTML = `
+    <div class="job-row-num">∞</div>
+    <div class="job-row-body">
+      <div class="job-row-client">Free Build</div>
+      <div class="job-row-title">Playpen</div>
+      <div class="job-row-objective">No rules. No goals. Unlimited components. Build anything.</div>
+      <div class="job-row-brief">"The best way to learn is to blow something up. Safely. Hopefully."</div>
+    </div>
+    <div class="job-row-side">
+      <div class="job-row-payout">🔧</div>
+      <button class="job-accept" style="background:linear-gradient(135deg,#3a2a0a,#6a4a10)">ENTER →</button>
+    </div>
   `;
-  wrap.appendChild(tutHeader);
-  for (const [i, job] of TUTORIAL_JOBS.entries()) {
-    wrap.appendChild(makeJobCard(job, `T${String(i + 1).padStart(2, '0')}`));
-  }
+  playpenCard.querySelector('.job-accept').addEventListener('click', () => {
+    document.getElementById('jobboard').style.display = 'none';
+    enterPlaypen();
+  });
+  wrap.appendChild(playpenCard);
 
-  // ── Client contracts ──
-  const jobHeader = document.createElement('div');
-  jobHeader.className = 'job-section-header';
-  jobHeader.innerHTML = `<span>CLIENT CONTRACTS</span>`;
-  wrap.appendChild(jobHeader);
-  for (const [i, job] of JOBS.entries()) {
-    wrap.appendChild(makeJobCard(job, String(i + 1).padStart(3, '0')));
+  // ── Puzzle levels ──
+  const puzzHeader = document.createElement('div');
+  puzzHeader.className = 'job-section-header';
+  puzzHeader.innerHTML = `
+    <span>PUZZLE MODE</span>
+    <span class="job-section-progress">${PUZZLE_LEVELS.filter(p => completedJobs.has(p.id)).length} / ${PUZZLE_LEVELS.length} solved</span>
+  `;
+  wrap.appendChild(puzzHeader);
+  for (const [i, def] of PUZZLE_LEVELS.entries()) {
+    wrap.appendChild(makePuzzleCard(def, i + 1));
   }
 }
 
@@ -4098,6 +4294,86 @@ function acceptJob(job) {
   enterGame();
   setTool('miner');
   popups.push({ wx: WORLD_W / 2, wy: WORLD_H / 2 - 3, life: 70, text: `JOB ACCEPTED: ${job.title}` });
+}
+
+// ── Update toolbar cost spans with kit counts (or restore prices) ──
+function updateKitDisplay() {
+  const toolbar = document.getElementById('toolbar');
+  if (!toolbar) return;
+  const inKit = levelKit != null;
+  toolbar.classList.toggle('puzzle-mode', inKit);
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+    const t = btn.dataset.tool;
+    const costEl = btn.querySelector('.cost');
+    if (!costEl) return;
+    if (inKit) {
+      const count = levelKit[t] ?? 0;
+      costEl.textContent = `×${count}`;
+      costEl.style.color = count > 0 ? '#1a6e3a' : '#a83030';
+    } else {
+      costEl.style.color = '';
+      costEl.textContent = NODE_COST[t] != null ? `$${NODE_COST[t]}` : '';
+    }
+  });
+  updateToolbarState();
+}
+
+// ── Place a 4×4 LED footprint for a puzzle level ──
+function placePuzzleLed(ox, oy, dir, color) {
+  const [aox, aoy] = dir === DIR.R ? [0,1] : dir === DIR.D ? [1,0] : dir === DIR.L ? [3,1] : [1,3];
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 4; dx++) {
+      const isAnchor = dx === aox && dy === aoy;
+      setG(ox+dx, oy+dy, isAnchor
+        ? { type:'led', charge:0, flash:0, color, size:4, dir, originX:ox, originY:oy, locked:true }
+        : { type:'led_part', originX:ox, originY:oy, locked:true });
+    }
+  }
+}
+
+// ── Load a puzzle level — places fixed tiles, sets kit, enters game ──
+function loadPuzzle(def) {
+  // Clean up ore tiles added by a previous puzzle
+  for (const k of puzzleOres) ores.delete(k);
+  puzzleOres.clear();
+
+  isPlaypen   = false;
+  currentJob  = def;
+  jobTimeLeft = def.timeLimit ? def.timeLimit * 60 : -1;
+  levelKit    = { ...def.kit };
+  resetChallenge({ keepMoney: true });   // clears grid; placeLEDs places 0 LEDs (def.leds=0)
+
+  // Register puzzle ore tiles (needed for locked miners to function)
+  for (const o of (def.fixedOres || [])) {
+    const k = key(o.x, o.y);
+    ores.add(k);
+    puzzleOres.add(k);
+  }
+
+  // Place fixed batteries (locked so player can't delete them)
+  for (const b of (def.fixedBatteries || [])) {
+    setG(b.x, b.y, { type:'battery', dir:b.dir, charge: b.charge ?? 0, dischargeTick:0, flash:0, on: b.on ?? true, color:b.color ?? undefined, locked:true });
+  }
+  // Place fixed LEDs
+  for (const l of (def.fixedLeds || [])) {
+    placePuzzleLed(l.ox, l.oy, l.dir, l.color);
+  }
+  // Place fixed components (miners, buttons, etc.) — all locked
+  for (const ex of (def.fixedExtra || [])) {
+    setG(ex.x, ex.y, { ...ex.cell, locked: true });
+  }
+
+  // Center camera on puzzle area (batteries and LEDs are around col 32, row 32)
+  cam.x    = -32 * TILE;
+  cam.y    = -32 * TILE;
+  cam.zoom = 1.8;
+
+  document.getElementById('chal-title').textContent = `PUZZLE ${def.id.split('-')[1]}`;
+  document.getElementById('ledMenu').style.display = 'none';
+  updateKitDisplay();
+  enterGame();
+  setTool('belt');
+  popups.push({ wx: 32, wy: 29, life: 80, text: `PUZZLE: ${def.title.toUpperCase()}` });
 }
 
 function enterPlaypen() {
@@ -4145,6 +4421,26 @@ function updateJobBanner() {
   const banner = document.getElementById('job-banner');
   const text   = document.getElementById('job-banner-text');
   const dl     = document.getElementById('job-deadline');
+  const clock  = document.getElementById('puzzle-clock');
+
+  // ── Puzzle countdown clock (top-centre) ──
+  const showClock = !!(currentJob?.timeLimit && !challengeWon && !isPlaypen);
+  if (clock) {
+    clock.style.display = showClock ? 'flex' : 'none';
+    if (showClock) {
+      const total = currentJob.timeLimit * 60;
+      const pct   = jobTimeLeft / total;
+      const warn  = pct < 0.5 && pct >= 0.25;
+      const danger = pct < 0.25;
+      clock.classList.toggle('warn',   warn);
+      clock.classList.toggle('danger', danger);
+      const timeEl = document.getElementById('puzzle-clock-time');
+      const barFill = document.getElementById('puzzle-clock-bar-fill');
+      if (timeEl) timeEl.textContent = formatTime(jobTimeLeft);
+      if (barFill) barFill.style.width = `${Math.max(0, pct * 100)}%`;
+    }
+  }
+
   if (isPlaypen) {
     banner.style.display = 'flex';
     text.textContent = 'PLAYPEN — FREE BUILD';
@@ -4162,10 +4458,10 @@ function updateJobBanner() {
   banner.style.display = 'flex';
   text.textContent = currentJob.client.split(',')[0].split('(')[0].trim();
   text.title = currentJob.title;
-  if (currentJob.timeLimit) {
-    dl.textContent = '⏱ ' + formatTime(jobTimeLeft);
-    dl.classList.toggle('warn',   jobTimeLeft < 90 * 60 && jobTimeLeft >= 30 * 60);
-    dl.classList.toggle('danger', jobTimeLeft < 30 * 60);
+  // Hide inline deadline when the big clock is showing
+  if (currentJob.timeLimit && !challengeWon) {
+    dl.textContent = '';
+    dl.classList.remove('warn', 'danger');
   } else {
     dl.textContent = 'NO DEADLINE';
     dl.classList.remove('warn', 'danger');
@@ -4212,6 +4508,9 @@ function updateGoalPanel() {
 }
 
 function failJob() {
+  levelKit = null;
+  for (const k of puzzleOres) ores.delete(k);
+  puzzleOres.clear();
   currentJob = null;
   jobTimeLeft = -1;
   gameState = 'jobboard';
