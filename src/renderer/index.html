@@ -999,6 +999,198 @@ canvas {
   line-height: 1.5;
 }
 
+/* ── Puzzle Editor Toolbar ── */
+#puzzle-editor-toolbar {
+  display: none;
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(6, 10, 22, 0.97);
+  border: 1px solid rgba(80, 120, 220, 0.3);
+  border-radius: 12px;
+  padding: 10px 14px;
+  gap: 6px;
+  align-items: center;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 32px rgba(0,0,60,0.55), 0 0 0 1px rgba(100,150,255,0.08) inset;
+  z-index: 400;
+}
+body.puzzle-editor #puzzle-editor-toolbar { display: flex; }
+body.puzzle-editor #toolbar              { display: none; }
+body.puzzle-editor #hints                { display: none; }
+
+.ed-tool-btn {
+  width: 62px;
+  min-height: 58px;
+  border-radius: 8px;
+  border: 1px solid rgba(80,120,220,0.18);
+  background: rgba(255,255,255,0.04);
+  color: #5070b0;
+  font-size: 10px;
+  font-family: monospace;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 4px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ed-tool-btn:hover {
+  background: rgba(80,120,255,0.1);
+  border-color: rgba(100,150,255,0.4);
+  color: #90b0f0;
+}
+.ed-tool-btn.active {
+  background: rgba(30,60,160,0.55);
+  border-color: rgba(80,140,255,0.6);
+  color: #c0d8ff;
+  box-shadow: 0 0 14px rgba(80,140,255,0.2);
+}
+.ed-tool-btn svg { width: 22px; height: 22px; flex-shrink: 0; }
+.ed-sep { width: 1px; height: 36px; background: rgba(80,120,220,0.2); margin: 0 2px; flex-shrink: 0; }
+
+/* ── Puzzle Editor Overlay (right side panel) ── */
+#puzzle-editor-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 270px;
+  height: 100vh;
+  background: rgba(5, 9, 20, 0.97);
+  border-left: 1px solid rgba(80,120,220,0.2);
+  z-index: 410;
+  overflow-y: auto;
+  padding: 14px 14px 18px;
+  flex-direction: column;
+  gap: 10px;
+  font-family: monospace;
+  box-shadow: -6px 0 30px rgba(0,0,40,0.5);
+}
+body.puzzle-editor #puzzle-editor-overlay { display: flex; }
+.ped-header {
+  font-size: 13px;
+  letter-spacing: 4px;
+  color: #6090e0;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(80,120,220,0.2);
+  padding-bottom: 10px;
+  margin-bottom: 2px;
+}
+.ped-section {
+  font-size: 9px;
+  letter-spacing: 2.5px;
+  color: rgba(100,140,200,0.5);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.ped-field {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(80,120,220,0.2);
+  border-radius: 6px;
+  color: #c0d4f8;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-family: monospace;
+  outline: none;
+  resize: none;
+  transition: border-color 0.12s;
+}
+.ped-field:focus {
+  border-color: rgba(100,160,255,0.55);
+  background: rgba(255,255,255,0.08);
+}
+.ped-field.invalid { border-color: #ff4060 !important; }
+.ped-num { width: 68px; flex-shrink: 0; text-align: center; }
+.ped-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ped-label {
+  font-size: 10px;
+  color: rgba(120,150,210,0.6);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ped-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(120,140,180,0.7);
+  transition: border-color 0.1s, box-shadow 0.1s;
+  flex-shrink: 0;
+}
+.ped-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 8px rgba(255,255,255,0.35);
+}
+.ped-toggle {
+  flex: 1;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(80,120,220,0.25);
+  background: rgba(255,255,255,0.04);
+  color: rgba(120,150,210,0.7);
+  font-family: monospace;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ped-toggle.active {
+  background: rgba(30,60,150,0.6);
+  border-color: rgba(80,140,255,0.5);
+  color: #c0d8ff;
+}
+.ped-action {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(80,120,220,0.25);
+  background: rgba(255,255,255,0.04);
+  color: rgba(140,170,230,0.8);
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  text-align: center;
+}
+.ped-action:hover {
+  background: rgba(40,70,160,0.5);
+  border-color: rgba(100,150,255,0.45);
+  color: #c0d8ff;
+}
+.ped-primary {
+  background: rgba(20,60,160,0.6);
+  border-color: rgba(70,130,255,0.5);
+  color: #c8e0ff;
+  font-weight: bold;
+}
+.ped-primary:hover { background: rgba(30,80,200,0.75); }
+.ped-danger { color: rgba(255,140,140,0.8); border-color: rgba(180,60,60,0.3); }
+.ped-danger:hover { background: rgba(100,20,20,0.5); border-color: rgba(200,60,60,0.4); color: #ffaaaa; }
+
+/* Custom puzzle card — maker button style */
+.puzzle-maker-card {
+  background: linear-gradient(135deg, rgba(10,18,50,0.9), rgba(20,40,100,0.8));
+  border: 1px solid rgba(80,120,220,0.35);
+  color: #90b8ff;
+}
+.puzzle-maker-card:hover { border-color: rgba(100,160,255,0.55); box-shadow: 0 4px 20px rgba(40,80,200,0.25); }
+.custom-puzzle-card { background: rgba(255,255,255,0.93); }
+
 /* ── Job board ── */
 #jobboard {
   position: fixed;
@@ -1412,6 +1604,130 @@ canvas {
   <button id="win-btn">RESET CIRCUIT</button>
 </div>
 <canvas id="confetti-canvas"></canvas>
+
+<!-- ─────────────────────────────────────────────────────────────────
+     PUZZLE EDITOR — toolbar (bottom) + overlay panel (right)
+───────────────────────────────────────────────────────────────── -->
+<div id="puzzle-editor-toolbar">
+  <button class="ed-tool-btn" id="ed-btn-battery" data-ed-tool="ed-battery">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="8" width="16" height="8" rx="2"/>
+      <path d="M18 11h3v2h-3"/>
+      <line x1="6" y1="11" x2="6" y2="13"/><line x1="5" y1="12" x2="7" y2="12"/>
+      <line x1="10" y1="12" x2="12" y2="12"/>
+    </svg>
+    <span>BATTERY</span>
+  </button>
+  <button class="ed-tool-btn" id="ed-btn-led" data-ed-tool="ed-led">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="10" r="5"/>
+      <line x1="12" y1="15" x2="12" y2="19"/>
+      <line x1="9" y1="19" x2="15" y2="19"/>
+      <line x1="7.5" y1="6.5" x2="4.5" y2="3.5"/>
+      <line x1="16.5" y1="6.5" x2="19.5" y2="3.5"/>
+      <line x1="12" y1="5" x2="12" y2="2"/>
+    </svg>
+    <span>LED</span>
+  </button>
+  <button class="ed-tool-btn" id="ed-btn-miner" data-ed-tool="ed-miner">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8"/>
+      <line x1="12" y1="2"  x2="12" y2="4"/>
+      <line x1="12" y1="20" x2="12" y2="22"/>
+      <polyline points="14,6 9,12 14,12 10,18" stroke-width="1.6"/>
+    </svg>
+    <span>MINER</span>
+  </button>
+  <button class="ed-tool-btn" id="ed-btn-button" data-ed-tool="ed-button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="8" width="18" height="8" rx="4"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.4"/>
+    </svg>
+    <span>BUTTON</span>
+  </button>
+  <div class="ed-sep"></div>
+  <button class="ed-tool-btn" id="ed-btn-ore" data-ed-tool="ed-ore">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="12,3 20,8 20,16 12,21 4,16 4,8"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.5"/>
+    </svg>
+    <span>ORE</span>
+  </button>
+  <button class="ed-tool-btn" id="ed-btn-erase" data-ed-tool="ed-erase">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 20H7L3 16l11-11 7 7-3.5 3.5"/>
+      <path d="M6.5 17.5l4-4"/>
+    </svg>
+    <span>ERASE</span>
+  </button>
+  <div class="ed-sep"></div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 10px;min-width:42px">
+    <span id="ed-dir-label" style="font-size:24px;line-height:1;color:#6080c0">→</span>
+    <span style="font-size:9px;color:#3050a0;font-family:monospace;letter-spacing:1px">R=ROTATE</span>
+  </div>
+</div>
+
+<div id="puzzle-editor-overlay">
+  <div class="ped-header">✦ PUZZLE MAKER</div>
+
+  <div class="ped-section">PUZZLE INFO</div>
+  <input  class="ped-field" id="ped-title"     type="text"    placeholder="Title…" maxlength="48">
+  <textarea class="ped-field" id="ped-brief"   rows="2"       placeholder="One clever quote or hint (optional)"></textarea>
+  <textarea class="ped-field" id="ped-obj"     rows="2"       placeholder="Objective shown to the player"></textarea>
+
+  <div class="ped-section">PLAYER KIT</div>
+  <div class="ped-row">
+    <span class="ped-label">Wire ×</span>
+    <input class="ped-field ped-num" id="ped-kit-belt" type="number" min="0" max="99" value="10">
+  </div>
+
+  <div class="ped-section">WIN CONDITIONS</div>
+  <div class="ped-row">
+    <span class="ped-label">Time limit (s)</span>
+    <input class="ped-field ped-num" id="ped-timelimit" type="number" min="5" max="600" placeholder="∞">
+  </div>
+  <div class="ped-row">
+    <span class="ped-label">Hold all LEDs lit (s)</span>
+    <input class="ped-field ped-num" id="ped-winhold" type="number" min="1" max="60" value="3">
+  </div>
+
+  <div class="ped-section">BATTERY</div>
+  <div class="ped-row" style="gap:6px">
+    <span class="ped-label">Color</span>
+    <div style="display:flex;gap:5px;flex-wrap:wrap" id="ped-bat-colors">
+      <div class="ped-swatch active" data-color="" style="background:rgba(80,90,110,0.5)">✕</div>
+      <div class="ped-swatch" data-color="red"    style="background:#ff5d5d"></div>
+      <div class="ped-swatch" data-color="green"  style="background:#6dff8a"></div>
+      <div class="ped-swatch" data-color="blue"   style="background:#1a6fd4"></div>
+      <div class="ped-swatch" data-color="orange" style="background:#ffb155"></div>
+    </div>
+  </div>
+  <div class="ped-row">
+    <span class="ped-label">Starts</span>
+    <div style="display:flex;gap:6px">
+      <button class="ped-toggle active" id="ped-bat-on">ON ▶</button>
+      <button class="ped-toggle"        id="ped-bat-off">OFF ◼</button>
+    </div>
+  </div>
+
+  <div class="ped-section">LED</div>
+  <div class="ped-row" style="gap:6px">
+    <span class="ped-label">Color</span>
+    <div style="display:flex;gap:5px;flex-wrap:wrap" id="ped-led-colors">
+      <div class="ped-swatch active" data-color="" style="background:rgba(80,90,110,0.5)">✕</div>
+      <div class="ped-swatch" data-color="red"    style="background:#ff5d5d"></div>
+      <div class="ped-swatch" data-color="green"  style="background:#6dff8a"></div>
+      <div class="ped-swatch" data-color="blue"   style="background:#1a6fd4"></div>
+      <div class="ped-swatch" data-color="orange" style="background:#ffb155"></div>
+    </div>
+  </div>
+
+  <div style="flex:1"></div>
+
+  <button class="ped-action ped-primary" id="ped-save">SAVE PUZZLE</button>
+  <button class="ped-action"             id="ped-test">▶ TEST</button>
+  <button class="ped-action ped-danger"  id="ped-exit">✕ EXIT EDITOR</button>
+</div>
 
 <div id="toast">
   Place <strong>Extractors</strong> on Power Points → route <strong>Wires</strong> → charge all <strong>LEDs</strong> and hold for 20s to complete the circuit

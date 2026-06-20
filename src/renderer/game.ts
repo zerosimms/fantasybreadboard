@@ -240,6 +240,17 @@ let bankIncome         = 0;    // credits earned by receivers during this challe
 let levelKit           = null; // { belt:12, colorizer:2, ... } in puzzle mode; null otherwise
 let puzzleOres         = new Set<string>(); // ore tiles placed by loadPuzzle, cleaned up on exit
 
+// Puzzle Editor state
+const CUSTOM_PUZZLES_KEY = 'breadboard_custom_puzzles_v1';
+let customPuzzles: any[]          = [];
+let isPuzzleEditor                = false;
+let puzzleEditorId: string | null = null; // ID being edited (null = new)
+let puzzleEditorOres              = new Set<string>(); // ore tiles placed in editor
+let editorTool                    = 'ed-miner';
+let editorBatteryColor: string | null = null;
+let editorLedColor: string | null     = null;
+let editorBatteryOn                   = true;
+
 // Tutorial callout state
 let tutCalloutShown: Record<string, boolean> = {};  // tracks which one-shot callouts have fired
 
@@ -505,7 +516,7 @@ function canPlace(cx, cy) {
     return true;
   }
   if (tool === 'vein') return !e && !ores.has(key(cx, cy)) && canAfford('vein');
-  if (tool === 'delete')   return !!e;
+  if (tool === 'delete')   return !!e || (ores.has(key(cx, cy)) && !puzzleOres.has(key(cx, cy)) && !puzzleEditorOres.has(key(cx, cy)));
   return false;
 }
 
@@ -620,6 +631,14 @@ function placeTile(cx, cy, opts = {}) {
 
   if (tool === 'delete') {
     removeBuilding(cx, cy);
+    // Also remove the ore tile if present and not puzzle-locked
+    const dk = key(cx, cy);
+    if (ores.has(dk) && !puzzleOres.has(dk) && !puzzleEditorOres.has(dk)) {
+      ores.delete(dk);
+      boughtVeins.delete(dk);
+      veinYield.delete(dk);
+      burntVeins.delete(dk);
+    }
     return;
   }
 
@@ -3152,6 +3171,7 @@ document.addEventListener('keydown', e => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.key === 'r' || e.key === 'R') {
+    if (isPuzzleEditor) { beltDir = (beltDir + 1) % 4; updateDirIcon(); updateEditorDirLabel(); return; }
     const hc = hovCell && getG(hovCell.x, hovCell.y);
     if (hc && hc.type === 'colorizer') {
       const horiz = (hc.dir === DIR.R || hc.dir === DIR.L);
@@ -3233,14 +3253,29 @@ canvas.addEventListener('mousedown', e => {
   }
   if (e.button === 2) {
     const c = s2c(e.clientX, e.clientY);
-    if (inBnd(c.x, c.y) && getG(c.x, c.y)) {
-      removeBuilding(c.x, c.y);
-    } else {
-      setTool(null);   // right-click on an empty tile clears the selected tool
+    if (isPuzzleEditor) { removeEditorCell(c.x, c.y); return; }
+    if (inBnd(c.x, c.y)) {
+      const rk = key(c.x, c.y);
+      if (getG(c.x, c.y)) {
+        removeBuilding(c.x, c.y);
+        // Also clear the ore tile if the component was sitting on one
+        if (ores.has(rk) && !puzzleOres.has(rk) && !puzzleEditorOres.has(rk)) {
+          ores.delete(rk); boughtVeins.delete(rk); veinYield.delete(rk); burntVeins.delete(rk);
+        }
+      } else if (ores.has(rk) && !puzzleOres.has(rk) && !puzzleEditorOres.has(rk)) {
+        ores.delete(rk); boughtVeins.delete(rk); veinYield.delete(rk); burntVeins.delete(rk);
+      } else {
+        setTool(null);   // right-click on empty non-ore tile clears the selected tool
+      }
     }
     return;
   }
   if (e.button === 0) {
+    if (isPuzzleEditor) {
+      const c = s2c(e.clientX, e.clientY);
+      editorHandleClick(c.x, c.y);
+      return; // don't set placing = true
+    }
     placing      = true;
     const c      = s2c(e.clientX, e.clientY);
     lastPlaced   = key(c.x, c.y);
@@ -4025,6 +4060,25 @@ function applySnapshot(data) {
   document.getElementById('win').style.display = 'none';
 }
 
+function loadCustomPuzzles() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PUZZLES_KEY);
+    customPuzzles = raw ? JSON.parse(raw) : [];
+  } catch { customPuzzles = []; }
+}
+
+function saveCustomPuzzle(def: any) {
+  const idx = customPuzzles.findIndex((p: any) => p.id === def.id);
+  if (idx >= 0) customPuzzles[idx] = def;
+  else customPuzzles.push(def);
+  try { localStorage.setItem(CUSTOM_PUZZLES_KEY, JSON.stringify(customPuzzles)); } catch {}
+}
+
+function deleteCustomPuzzle(id: string) {
+  customPuzzles = customPuzzles.filter((p: any) => p.id !== id);
+  try { localStorage.setItem(CUSTOM_PUZZLES_KEY, JSON.stringify(customPuzzles)); } catch {}
+}
+
 function saveGame() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify(snapshotState()));
@@ -4276,6 +4330,73 @@ function buildJobCards() {
   for (const [i, def] of PUZZLE_LEVELS.entries()) {
     wrap.appendChild(makePuzzleCard(def, i + 1));
   }
+
+  // ── Custom puzzles ──
+  if (customPuzzles.length > 0) {
+    const customHeader = document.createElement('div');
+    customHeader.className = 'job-section-header';
+    customHeader.innerHTML = `<span>MY PUZZLES</span><span class="job-section-progress">${customPuzzles.length} created</span>`;
+    wrap.appendChild(customHeader);
+    for (const def of customPuzzles) {
+      wrap.appendChild(makeCustomPuzzleCard(def));
+    }
+  }
+
+  // ── Puzzle Maker card ──
+  const makerCard = document.createElement('div');
+  makerCard.className = 'job-card puzzle-maker-card';
+  makerCard.innerHTML = `
+    <div class="job-row-num" style="color:#6090e0;font-size:22px">✎</div>
+    <div class="job-row-body">
+      <div class="job-row-client" style="color:#4060a0">Puzzle Maker</div>
+      <div class="job-row-title" style="color:#90b8ff">Create Your Own Puzzle</div>
+      <div class="job-row-objective" style="color:#5070a0">Place batteries, LEDs, miners and buttons. Set a kit, an optional timer, and share your creation.</div>
+    </div>
+    <div class="job-row-side">
+      <div class="job-row-payout" style="color:#5070a0">✦</div>
+      <button class="job-accept" style="background:linear-gradient(135deg,#0a1232,#162060);border:1px solid rgba(80,120,220,0.4);color:#90b8ff">CREATE →</button>
+    </div>
+  `;
+  makerCard.querySelector('.job-accept')!.addEventListener('click', () => {
+    document.getElementById('jobboard')!.style.display = 'none';
+    enterPuzzleEditor();
+  });
+  wrap.appendChild(makerCard);
+}
+
+function makeCustomPuzzleCard(def: any) {
+  const solved = completedJobs.has(def.id);
+  const card = document.createElement('div');
+  card.className = 'job-card custom-puzzle-card';
+  card.innerHTML = `
+    <div class="job-row-num" style="font-size:13px;color:#4060a0">✎</div>
+    <div class="job-row-body">
+      <div class="job-row-client">Custom Puzzle</div>
+      <div class="job-row-title">${def.title}</div>
+      <div class="job-row-objective">${def.objective || ''}</div>
+      <div class="job-row-brief">${def.brief || ''}</div>
+    </div>
+    <div class="job-row-side">
+      <div class="job-row-payout">${solved ? '✓' : '–'}</div>
+      <button class="job-accept puz-play-btn">PLAY →</button>
+      <button class="job-accept puz-edit-btn" style="margin-top:6px;background:linear-gradient(135deg,#0a1232,#162060);border:1px solid rgba(80,120,220,0.35);color:#8090c0;font-size:10px">EDIT</button>
+      <button class="job-accept puz-del-btn" style="margin-top:4px;background:linear-gradient(135deg,#1a0808,#3a1010);border:1px solid rgba(180,60,60,0.3);color:#c07070;font-size:10px">DELETE</button>
+    </div>
+  `;
+  card.querySelector('.puz-play-btn')!.addEventListener('click', () => {
+    document.getElementById('jobboard')!.style.display = 'none';
+    loadPuzzle(def);
+  });
+  card.querySelector('.puz-edit-btn')!.addEventListener('click', () => {
+    document.getElementById('jobboard')!.style.display = 'none';
+    enterPuzzleEditor(def);
+  });
+  card.querySelector('.puz-del-btn')!.addEventListener('click', () => {
+    if (!confirm(`Delete "${def.title}"?`)) return;
+    deleteCustomPuzzle(def.id);
+    buildJobCards();
+  });
+  return card;
 }
 
 function showJobBoard() {
@@ -4417,6 +4538,228 @@ function exitPlaypen() {
   showJobBoard();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// PUZZLE EDITOR
+// ═══════════════════════════════════════════════════════════════
+
+function setEditorTool(t: string) {
+  editorTool = t;
+  document.querySelectorAll('.ed-tool-btn').forEach(btn => {
+    btn.classList.toggle('active', (btn as HTMLElement).dataset.edTool === t);
+  });
+}
+
+function updateEditorDirLabel() {
+  const lbl = document.getElementById('ed-dir-label');
+  if (lbl) lbl.textContent = DIR_LABEL[beltDir] ?? '→';
+}
+
+function selectPedSwatch(group: 'bat' | 'led', color: string | null) {
+  const container = document.getElementById(group === 'bat' ? 'ped-bat-colors' : 'ped-led-colors');
+  if (!container) return;
+  container.querySelectorAll('.ped-swatch').forEach(s => {
+    s.classList.toggle('active', ((s as HTMLElement).dataset.color || null) === color);
+  });
+  if (group === 'bat') editorBatteryColor = color;
+  else editorLedColor = color;
+}
+
+function setPedBatOn(on: boolean) {
+  editorBatteryOn = on;
+  document.getElementById('ped-bat-on')?.classList.toggle('active', on);
+  document.getElementById('ped-bat-off')?.classList.toggle('active', !on);
+}
+
+function removeEditorCell(cx: number, cy: number) {
+  const cell = getG(cx, cy);
+  if (!cell) {
+    const k = key(cx, cy);
+    if (puzzleEditorOres.has(k)) { puzzleEditorOres.delete(k); ores.delete(k); }
+    return;
+  }
+  if (cell.type === 'led' || cell.type === 'led_part') {
+    const ox = cell.originX ?? cx, oy = cell.originY ?? cy;
+    for (let dy = 0; dy < 4; dy++)
+      for (let dx = 0; dx < 4; dx++)
+        delG(ox + dx, oy + dy);
+  } else {
+    delG(cx, cy);
+  }
+}
+
+function editorHandleClick(cx: number, cy: number) {
+  if (!inBnd(cx, cy)) return;
+  switch (editorTool) {
+    case 'ed-battery':
+      removeEditorCell(cx, cy);
+      setG(cx, cy, { type:'battery', dir:beltDir, charge:0, dischargeTick:0, flash:0, on:editorBatteryOn, color:editorBatteryColor ?? undefined, locked:true });
+      break;
+    case 'ed-led':
+      for (let dy = 0; dy < 4; dy++)
+        for (let dx = 0; dx < 4; dx++)
+          if (getG(cx+dx, cy+dy)) removeEditorCell(cx+dx, cy+dy);
+      placePuzzleLed(cx, cy, beltDir, editorLedColor ?? null);
+      break;
+    case 'ed-miner':
+      removeEditorCell(cx, cy);
+      setG(cx, cy, { type:'miner', dir:beltDir, tick:0, tier:0, locked:true });
+      break;
+    case 'ed-button':
+      removeEditorCell(cx, cy);
+      setG(cx, cy, { type:'button', dir:beltDir, on:false, flash:0, locked:true });
+      break;
+    case 'ed-ore': {
+      const k = key(cx, cy);
+      if (puzzleEditorOres.has(k)) { puzzleEditorOres.delete(k); ores.delete(k); }
+      else { puzzleEditorOres.add(k); ores.add(k); }
+      break;
+    }
+    case 'ed-erase':
+      removeEditorCell(cx, cy);
+      break;
+  }
+}
+
+function extractPuzzleDef(): any {
+  const title     = ((document.getElementById('ped-title')     as HTMLInputElement).value.trim())   || 'Untitled Puzzle';
+  const brief     = (document.getElementById('ped-brief')      as HTMLTextAreaElement).value.trim();
+  const objective = (document.getElementById('ped-obj')        as HTMLTextAreaElement).value.trim();
+  const kitBelts  = Math.max(0, parseInt((document.getElementById('ped-kit-belt')  as HTMLInputElement).value)  || 10);
+  const tlRaw     = (document.getElementById('ped-timelimit') as HTMLInputElement).value.trim();
+  const timeLimit = tlRaw ? (parseInt(tlRaw) || null) : null;
+  const winHold   = Math.max(1, parseInt((document.getElementById('ped-winhold')   as HTMLInputElement).value)  || 3) * 60;
+
+  const fixedBatteries: any[] = [];
+  const fixedLedsMap   = new Map<string, any>();
+  const fixedExtra: any[] = [];
+  const fixedOres: any[] = [];
+
+  for (const [k, cell] of grid) {
+    if (!cell.locked) continue;
+    const [x, y] = (k as string).split(',').map(Number);
+    if (cell.type === 'battery') {
+      fixedBatteries.push({ x, y, dir:cell.dir, charge:cell.charge ?? 0, on:cell.on ?? true, color:cell.color ?? undefined });
+    } else if (cell.type === 'led') {
+      const lk = `${cell.originX},${cell.originY}`;
+      if (!fixedLedsMap.has(lk)) fixedLedsMap.set(lk, { ox:cell.originX, oy:cell.originY, dir:cell.dir, color:cell.color ?? null });
+    } else if (cell.type === 'led_part') {
+      // skip — covered by anchor
+    } else {
+      const c: any = { type:cell.type, dir:cell.dir ?? DIR.R };
+      if (cell.type === 'miner')  { c.tick = 0; c.tier = 0; }
+      if (cell.type === 'button') { c.on = cell.on ?? false; c.flash = 0; }
+      fixedExtra.push({ x, y, cell: c });
+    }
+  }
+
+  for (const k of puzzleEditorOres) {
+    const [x, y] = (k as string).split(',').map(Number);
+    fixedOres.push({ x, y });
+  }
+
+  return {
+    id: puzzleEditorId || `custom-${Date.now()}`,
+    isPuzzle: true, isCustom: true,
+    title,
+    client: 'Custom Puzzle',
+    brief: brief ? `"${brief}"` : '"A custom puzzle."',
+    objective: objective || 'Complete the circuit.',
+    kit: { belt: kitBelts },
+    fixedOres, fixedBatteries,
+    fixedLeds: [...fixedLedsMap.values()],
+    fixedExtra,
+    winHold, timeLimit,
+    leds: 0, reward: 0, requires: [],
+  };
+}
+
+function doSavePuzzle() {
+  const titleEl = document.getElementById('ped-title') as HTMLInputElement;
+  if (!titleEl.value.trim()) {
+    titleEl.classList.add('invalid');
+    titleEl.focus();
+    setTimeout(() => titleEl.classList.remove('invalid'), 1200);
+    return;
+  }
+  const def = extractPuzzleDef();
+  saveCustomPuzzle(def);
+  exitPuzzleEditor();
+}
+
+function doTestPuzzle() {
+  const def = extractPuzzleDef();
+  isPuzzleEditor = false;
+  for (const k of puzzleEditorOres) ores.delete(k);
+  puzzleEditorOres.clear();
+  document.body.classList.remove('puzzle-editor');
+  loadPuzzle(def);
+}
+
+function enterPuzzleEditor(existingDef?: any) {
+  for (const k of puzzleOres)       ores.delete(k); puzzleOres.clear();
+  for (const k of puzzleEditorOres) ores.delete(k); puzzleEditorOres.clear();
+
+  isPuzzleEditor     = true;
+  isPlaypen          = false;
+  currentJob         = null;
+  jobTimeLeft        = -1;
+  levelKit           = null;
+  puzzleEditorId     = existingDef?.id ?? null;
+  editorTool         = 'ed-miner';
+  editorBatteryColor = null;
+  editorLedColor     = null;
+  editorBatteryOn    = true;
+
+  resetChallenge({ keepMoney: true });
+
+  if (existingDef) {
+    (document.getElementById('ped-title')    as HTMLInputElement).value    = existingDef.title || '';
+    (document.getElementById('ped-brief')    as HTMLTextAreaElement).value = (existingDef.brief || '').replace(/^"|"$/g, '');
+    (document.getElementById('ped-obj')      as HTMLTextAreaElement).value = existingDef.objective || '';
+    (document.getElementById('ped-kit-belt') as HTMLInputElement).value    = String(existingDef.kit?.belt ?? 10);
+    (document.getElementById('ped-timelimit') as HTMLInputElement).value   = existingDef.timeLimit ? String(existingDef.timeLimit) : '';
+    (document.getElementById('ped-winhold') as HTMLInputElement).value     = String(Math.round((existingDef.winHold ?? 180) / 60));
+    for (const o of existingDef.fixedOres     || []) { const k = key(o.x, o.y); ores.add(k); puzzleEditorOres.add(k); }
+    for (const b of existingDef.fixedBatteries|| []) setG(b.x, b.y, { type:'battery', dir:b.dir, charge:b.charge??0, dischargeTick:0, flash:0, on:b.on??true, color:b.color, locked:true });
+    for (const l of existingDef.fixedLeds     || []) placePuzzleLed(l.ox, l.oy, l.dir, l.color);
+    for (const ex of existingDef.fixedExtra   || []) setG(ex.x, ex.y, { ...ex.cell, locked:true });
+  } else {
+    (document.getElementById('ped-title')    as HTMLInputElement).value    = '';
+    (document.getElementById('ped-brief')    as HTMLTextAreaElement).value = '';
+    (document.getElementById('ped-obj')      as HTMLTextAreaElement).value = '';
+    (document.getElementById('ped-kit-belt') as HTMLInputElement).value    = '10';
+    (document.getElementById('ped-timelimit') as HTMLInputElement).value   = '';
+    (document.getElementById('ped-winhold') as HTMLInputElement).value     = '3';
+  }
+
+  selectPedSwatch('bat', null);
+  selectPedSwatch('led', null);
+  setPedBatOn(true);
+
+  cam.x    = -32 * TILE;
+  cam.y    = -32 * TILE;
+  cam.zoom = 1.8;
+
+  document.getElementById('jobboard').style.display = 'none';
+  document.getElementById('chal-title').textContent  = 'PUZZLE EDITOR';
+  document.getElementById('ledMenu').style.display   = 'none';
+  document.body.classList.add('puzzle-editor');
+
+  enterGame();
+  setEditorTool('ed-miner');
+  updateEditorDirLabel();
+}
+
+function exitPuzzleEditor() {
+  isPuzzleEditor = false;
+  for (const k of puzzleEditorOres) ores.delete(k);
+  puzzleEditorOres.clear();
+  document.body.classList.remove('puzzle-editor');
+  document.getElementById('chal-title').textContent = 'CIRCUIT BOARD';
+  resetChallenge({ keepMoney: true });
+  showJobBoard();
+}
+
 function updateJobBanner() {
   const banner = document.getElementById('job-banner');
   const text   = document.getElementById('job-banner-text');
@@ -4545,6 +4888,7 @@ function continueGame() {
 }
 
 function togglePause() {
+  if (isPuzzleEditor) return; // pause menu doesn't apply in editor mode
   if (gameState === 'playing') {
     gameState = 'paused';
     document.getElementById('btn-quit').textContent = isPlaypen ? 'EXIT PLAYPEN' : 'QUIT TO TITLE';
@@ -4605,6 +4949,7 @@ document.getElementById('btn-quit').addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (gameState === 'playing') {
+    if (isPuzzleEditor) return; // ESC does nothing in editor — use the EXIT button
     // First Esc clears the selected tool; with nothing selected it opens the menu
     if (tool) setTool(null);
     else togglePause();
@@ -4699,6 +5044,23 @@ function initToolTips() {
 generateOres();
 placeLEDs();
 initToolTips();
+loadCustomPuzzles();
+
+// ── Puzzle Editor event listeners ──
+document.querySelectorAll('.ed-tool-btn').forEach(btn => {
+  btn.addEventListener('click', () => setEditorTool((btn as HTMLElement).dataset.edTool!));
+});
+document.getElementById('ped-save')!.addEventListener('click', doSavePuzzle);
+document.getElementById('ped-test')!.addEventListener('click', doTestPuzzle);
+document.getElementById('ped-exit')!.addEventListener('click', exitPuzzleEditor);
+document.getElementById('ped-bat-on')!.addEventListener('click', () => setPedBatOn(true));
+document.getElementById('ped-bat-off')!.addEventListener('click', () => setPedBatOn(false));
+document.querySelectorAll('#ped-bat-colors .ped-swatch').forEach(s => {
+  s.addEventListener('click', () => selectPedSwatch('bat', (s as HTMLElement).dataset.color || null));
+});
+document.querySelectorAll('#ped-led-colors .ped-swatch').forEach(s => {
+  s.addEventListener('click', () => selectPedSwatch('led', (s as HTMLElement).dataset.color || null));
+});
 
 cam.x = -WORLD_W * TILE / 2 + 80;
 cam.y = -WORLD_H * TILE / 2 + 40;
